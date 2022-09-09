@@ -22,11 +22,23 @@ begin # import gas data from sheet
 
     y = df.gas_prod
     y_n = y ./ maximum(y)
+    y_c = annual_to_cumulative(y_n)
     x = 1:size(y)[1]
+end
+
+struct hubbert_θ
+    ω
+    τ
+    Qmax
 end
 
 begin
     hubbert(θ, x) = @. 2θ[1] / (1 + cosh(θ[2] * (x - θ[3])))
+
+    hubbertQ(θ, x) = @. 4 * θ[1] / (θ[2] * (1 + exp(θ[2] * (θ[3] - x))))
+    hubbert_totalQ(θ, x) = reduce(+, hubbertQ(p, x) for p in θ)
+    hubbertQmax(θ) = 4θ[1] / θ[2]
+    hubbert_totalQmax(θ) = reduce(+, hubbertQmax(p) for p in θ)
 
     predict(θ, x) = reduce(.+, hubbert(p, x) for p in θ)
 
@@ -37,6 +49,20 @@ end
 fit_plot = plot_fit(x, y_n, predict, θ)
 add_cyle_decomp!(fit_plot, θ)
 display(fit_plot)
+
+#cumulative plots
+begin
+    sort!(θ, by=x -> x[3])
+    plot((x) -> hubbert_totalQ(θ, x), minimum(x), maximum(x) * 2, size=(1200, 800), lw=2)
+    scatter!(x, y_c, size=(1200, 800), label="true data", lw=2)
+
+    for i in 1:size(θ)[1]
+        plot!((x) -> hubbert_totalQ(θ[1:i], x), minimum(x), maximum(x) * 2, size=(1200, 800), lw=2)
+    end
+end
+
+plot!()
+
 
 
 @time res = fit_n_times(1, predict, θ_gen, x, y_n; op_fun=Optimisers.OAdam)
@@ -77,24 +103,24 @@ begin
 end
 
 
-function fit_n_times(n, h::Function, θ_gen, x, y; op_fun=Optimisers.AdaMax, kepochs=50, loss=Flux.Losses.mse)
+function fit_n_times(n, h::Function, θ_gen, x, y; op_fun=Optimisers.AdaMax, batches=500, loss=Flux.Losses.mse)
     acc = []
     for i in 1:n
-        push!(acc, fit_h(h, θ_gen(), x, y; op_fun, kepochs, loss))
+        push!(acc, fit_h(h, θ_gen(), x, y; op_fun, batches, loss))
     end
     return acc
 end
 
-function fit_h(h::Function, θ, x, y; op_fun=Optimisers.AdaMax, kepochs=50, loss=Flux.Losses.mse)
+function fit_h(h::Function, θ, x, y; op_fun=Optimisers.AdaMax, batches=500, loss=Flux.Losses.mse)
     opt = Optimisers.setup(op_fun(), θ)
     J(θ, x, y) = loss(h(θ, x), y)
 
-    ke_count = 0
+    batch_count = 0
     reset_count = 0
-    while ke_count < kepochs
-        run_iters(1000, opt, J, θ, x, y_n)
+    while batch_count < batches
+        run_iters(100, opt, J, θ, x, y_n)
         if valid_θ(θ)
-            ke_count += 1
+            batch_count += 1
         else
             θ = θ_gen(size(θ)[1])
             ke_count = 0
@@ -157,4 +183,17 @@ function plot_fit(x, y, h, θ)
     fit_plot = plot(x, y, size=(1200, 800), label="true data", lw=2)
     plot!(fit_plot, (x) -> (h(θ, x)[1]), minimum(x), maximum(x) * 2, label="Custom model", lw=2)
     return fit_plot
+end
+
+
+# data piplining
+function annual_to_cumulative(y)
+    Q = [P[1]]
+    for i in 1:size(y)[1]
+        if i == 1
+            continue
+        end
+        push!(Q, Q[i-1] + P[i])
+    end
+    return Q
 end
